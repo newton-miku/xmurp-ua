@@ -9,9 +9,8 @@
 #include <linux/netdevice.h>
 #include <linux/random.h>
 
-MODULE_ORIGIN("Haonan Chen");
-MODULE_AUTHOR("nEwt0n_m1ku");
-MODULE_DESCRIPTION("Modify UA in HTTP for anti-detection of router in XPU.");
+MODULE_AUTHOR("Haonan Chen");
+MODULE_DESCRIPTION("Modify UA in HTTP for anti-detection of router in XPU.Modified By nEwt0n_m1ku");
 MODULE_LICENSE("GPL");
 
 static struct nf_hook_ops nfho;
