@@ -12,7 +12,7 @@
 MODULE_AUTHOR("Haonan Chen");
 MODULE_DESCRIPTION("Modify UA in HTTP for anti-detection of router in XPU.Modified By nEwt0n_m1ku");
 MODULE_LICENSE("GPL");
-#define ONLY80 1 // 是否只处理80端口
+#define ONLY80 0 // 是否只处理80端口
 static struct nf_hook_ops nfho;
 
 enum char_scan_enum
@@ -170,7 +170,8 @@ unsigned int hook_funcion(const struct nf_hook_ops *ops, struct sk_buff *skb, co
     if (iph->protocol != IPPROTO_TCP)
         return NF_ACCEPT;
     tcph = tcp_hdr(skb);
-    if (ONLY80){
+    if (ONLY80)
+    {
         if (ntohs(tcph->dest) != 80)
             return NF_ACCEPT;
     }
