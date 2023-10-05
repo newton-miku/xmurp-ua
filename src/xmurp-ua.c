@@ -8,11 +8,17 @@
 #include <linux/tcp.h>
 #include <linux/netdevice.h>
 #include <linux/random.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
 MODULE_AUTHOR("Haonan Chen");
 MODULE_DESCRIPTION("Modify UA in HTTP for anti-detection of router in XPU.Modified By nEwt0n_m1ku");
 MODULE_LICENSE("GPL");
-#define ONLY80 0 // 是否只处理80端口
+
+// 调试开关 非0为开启
+#define ONLY80 0  // 只处理80端口
+#define PRINTUA 0 // 打印UA，仅供调试使用
+
 static struct nf_hook_ops nfho;
 
 enum char_scan_enum
@@ -29,20 +35,172 @@ enum skb_scan_ret
     ua_modified = 2,
 };
 const char str_ua[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64 And Fxck Away) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36";
+const char str_os[] = "Windows NT 10.0; Win64; x64 And Fxck Away";
+char modified_ua[512] = "";
+// 函数用于提取整个UA字符串，并查找操作系统信息
+/*char *extractUserAgentAndOS(const char *input, char **ua)
+{
+    // 查找 "User-Agent: " 开头的部分
+    const char *ua_start = strstr(input, "User-Agent: ");
+    if (ua_start == NULL)
+    {
+        return NULL; // 未找到 "User-Agent: "
+    }
+
+    ua_start += strlen("User-Agent: "); // 跳过 "User-Agent: " 部分
+
+    // 查找整个UA字符串（直到 "\r\n\r\n" 结束）
+    const char *ua_end = strstr(ua_start, "\r\n");
+    if (ua_end == NULL)
+    {
+        return NULL; // 未找到 "\r\n\r\n"
+    }
+
+    int ua_len = ua_end - ua_start;
+
+    // 复制整个UA字符串
+    char *ua_str = kmalloc(ua_len + 1, GFP_KERNEL);
+    if (ua_str != NULL)
+    {
+        strncpy(ua_str, ua_start, ua_len);
+        ua_str[ua_len] = '\0';
+
+        // 在整个UA中查找操作系统信息
+        char *start = strchr(ua_str, '(');
+        if (start == NULL)
+        {
+            return NULL; // 未找到左括号
+        }
+
+        char *end = strchr(start, ')');
+        if (end == NULL)
+        {
+            return NULL; // 未找到右括号
+        }
+
+        int len = end - start - 1; // 计算括号内内容的长度
+        if (len <= 0)
+        {
+            return NULL; // 括号内没有内容
+        }
+
+        char *os = kmalloc(len + 1, GFP_KERNEL); // 使用kmalloc分配内核内存
+        if (os != NULL)
+        {
+            strncpy(os, start + 1, len); // +1 跳过左括号
+            os[len] = '\0';
+
+            *ua = ua_str; // 将整个UA字符串返回
+
+            return os; // 返回操作系统信息
+        }
+    }
+
+    return NULL; // 内存分配失败
+}*/
+
+// 函数用于提取UA字符串，并查找操作系统信息，同时将UA分为前后两部分
+char *extractUserAgentAndOS(const char *input, char **ua_before, char **ua_after)
+{
+    // 查找 "User-Agent: " 开头的部分
+    const char *ua_start = strstr(input, "User-Agent: ");
+    if (ua_start == NULL)
+    {
+        return NULL; // 未找到 "User-Agent: "
+    }
+
+    ua_start += strlen("User-Agent: "); // 跳过 "User-Agent: " 部分
+
+    // 查找整个UA字符串（直到 "\r\n\r\n" 结束）
+    const char *ua_end = strstr(ua_start, "\r\n");
+    if (ua_end == NULL)
+    {
+        return NULL; // 未找到 "\r\n\r\n"
+    }
+
+    int ua_len = ua_end - ua_start;
+
+    // 复制整个UA字符串
+    char *ua_str = kmalloc(ua_len + 1, GFP_KERNEL);
+    if (ua_str != NULL)
+    {
+        strncpy(ua_str, ua_start, ua_len);
+        ua_str[ua_len] = '\0';
+
+        // 在整个UA中查找操作系统信息
+        char *start = strchr(ua_str, '(');
+        if (start == NULL)
+        {
+            return NULL; // 未找到左括号
+        }
+
+        char *end = strchr(start, ')');
+        if (end == NULL)
+        {
+            return NULL; // 未找到右括号
+        }
+
+        int len = end - start - 1; // 计算括号内内容的长度
+        if (len <= 0)
+        {
+            return NULL; // 括号内没有内容
+        }
+
+        char *os = kmalloc(len + 1, GFP_KERNEL); // 使用kmalloc分配内核内存
+        if (os != NULL)
+        {
+            strncpy(os, start + 1, len); // +1 跳过左括号
+            os[len] = '\0';
+
+            // 分割UA字符串为前后两部分
+            int before_len = start - ua_str;
+            *ua_before = kmalloc(before_len + 1, GFP_KERNEL);
+            if (*ua_before != NULL)
+            {
+                strncpy(*ua_before, ua_str, before_len);
+                (*ua_before)[before_len] = '\0';
+            }
+            else
+            {
+                printk("ua_before分配失败%d\t%d\t%d", before_len, (int)start, (int)ua_str);
+            }
+
+            // 后半部分是从 end 到 ua_end 之间的部分
+            // 使用memcpy复制 ua_str 中第一个右括号至结尾的部分
+            int after_len = ua_len - before_len - len;
+            *ua_after = kmalloc(after_len + 1, GFP_KERNEL);
+            if (*ua_after != NULL)
+            {
+                memcpy(*ua_after, end, after_len);
+                (*ua_after)[after_len] = '\0';
+            }
+            else
+            {
+                printk("ua_after分配失败");
+            }
+
+            kfree(os);     // 使用 kfree 释放内核内存
+            return ua_str; // 返回整个UA字符串
+        }
+    }
+
+    return NULL; // 内存分配失败
+}
+
 // 根据得到的指针尝试扫描，发现结尾或发现UA或更改UA后返回对应结果。
 // 输入零指针则为重置状态。
 inline u_int8_t char_scan(char *data)
 {
     const char str_ua_head[] = "User-Agent: ",
                str_end[] = "\r\n\r\n";
-    // 不算'\0'，长度分别为12、125、4
+    // 不算'\0'，长度分别为12、4
     static enum {
         nothing_matching,
         ua_head_matching,
         ua_modifying,
         end_matching,
-    } status = nothing_matching;
-    static u_int8_t covered_length;
+    } status = nothing_matching;    // 状态机的当前状态
+    static u_int8_t covered_length; // 已经匹配的字符长度
 
     if (data == 0)
     {
@@ -55,15 +213,15 @@ inline u_int8_t char_scan(char *data)
     {
         if (status == nothing_matching)
         {
-            if (*data == str_ua_head[0])
+            if (*data == str_ua_head[0]) // 如果当前字符与 "User-Agent: " 的第一个字符匹配
             {
-                status = ua_head_matching;
+                status = ua_head_matching; // 切换到匹配 User-Agent 头部的状态
                 covered_length = 1;
                 return next;
             }
-            else if (*data == str_end[0])
+            else if (*data == str_end[0]) // 如果当前字符与 "\r\n\r\n" 的第一个字符匹配
             {
-                status = end_matching;
+                status = end_matching; // 切换到匹配结尾的状态
                 covered_length = 1;
                 return next;
             }
@@ -72,12 +230,12 @@ inline u_int8_t char_scan(char *data)
         }
         else if (status == ua_head_matching)
         {
-            if (*data == str_ua_head[covered_length])
+            if (*data == str_ua_head[covered_length]) // 如果当前字符与 User-Agent 头部的下一个字符匹配
             {
                 covered_length++;
-                if (covered_length == 12)
+                if (covered_length == 12) // 如果已经匹配了 User-Agent 头部的全部字符
                 {
-                    status = ua_modifying;
+                    status = ua_modifying; // 切换到修改 User-Agent 的状态
                     covered_length = 0;
                     return next;
                 }
@@ -85,7 +243,7 @@ inline u_int8_t char_scan(char *data)
                     return next;
             }
             else
-                status = nothing_matching;
+                status = nothing_matching; // 如果不匹配，则回到初始状态
         }
         else if (status == ua_modifying)
         {
@@ -96,10 +254,20 @@ inline u_int8_t char_scan(char *data)
             }
             else
             {
-                if (covered_length < strlen(str_ua) - 1)
-                    *data = str_ua[covered_length];
-                else
-                    *data = ' ';
+                if (strlen(modified_ua) == 0) // 如果匹配浏览器没生效
+                {
+                    if (covered_length < strlen(str_ua) - 1)
+                        *data = str_ua[covered_length]; // 替换当前字符为新的 User-Agent 部分的字符
+                    else
+                        *data = ' ';
+                }
+                else // 如果匹配浏览器生效
+                {
+                    if (covered_length < strlen(modified_ua) - 1)
+                        *data = modified_ua[covered_length]; // 替换当前字符为新的 User-Agent 部分的字符
+                    else
+                        *data = ' ';
+                }
                 covered_length++;
                 return modified_and_next;
             }
@@ -128,6 +296,77 @@ inline u_int8_t skb_scan(char *data_start, char *data_end)
 {
     register char *i;
     register u_int8_t ret, modified = 0;
+    // char *ua = NULL;
+    // char *os = extractUserAgentAndOS(data_start, &ua);
+    // if (os != NULL)
+    // {
+    //     // 打印或处理提取的操作系统信息
+    //     printk("Detected OS: %s\n", os);
+
+    //     // 打印整个UA字符串
+    //     if (ua != NULL)
+    //     {
+    //         printk("Full UA: %s\n", ua);
+    //         kfree(ua); // 使用 kfree 释放内核内存
+    //     }
+
+    //     kfree(os); // 使用 kfree 释放内核内存
+    // }
+    char *ua_before = NULL;
+    char *ua_after = NULL;
+    char *ua = extractUserAgentAndOS(data_start, &ua_before, &ua_after);
+    if (ua != NULL)
+    {
+        // 计算新字符串的长度
+        int new_len = strlen(ua_before) + 1 + strlen(str_os) + strlen(ua_after) + 1;
+
+        // 分配内核内存来存储新字符串
+        char *mod_ua = kmalloc(new_len, GFP_KERNEL);
+        if (mod_ua != NULL)
+        {
+            // 使用 sprintf 将三部分字符串拼凑到新字符串中
+            sprintf(mod_ua, "%s(%s%s", ua_before, str_os, ua_after);
+
+            // 打印新字符串
+            if (PRINTUA)
+                printk("Modified UA: %s\n", mod_ua);
+
+            // 将新字符串复制到全局数组中
+            strncpy(modified_ua, mod_ua, sizeof(modified_ua) - 1);
+            // 释放内存
+            kfree(mod_ua);
+        }
+        else
+        {
+            printk("Modified UA分配内存失败\n");
+        }
+        // 打印或处理提取的整个ua
+        if (PRINTUA)
+        {
+            printk("Full UA: %s\n", ua);
+        }
+
+        // 打印前半部分UA
+        if (ua_before != NULL)
+        {
+            if (PRINTUA)
+            {
+                printk("UA Before OS: %s\n", ua_before);
+            }
+
+            kfree(ua_before); // 使用 kfree 释放内核内存
+        }
+
+        // 打印后半部分UA
+        if (ua_after != NULL)
+        {
+            if (PRINTUA)
+                printk("UA After OS: %s\n", ua_after);
+            kfree(ua_after); // 使用 kfree 释放内核内存
+        }
+
+        kfree(ua); // 使用 kfree 释放内核内存
+    }
     for (i = data_start; i < data_end; i++)
     {
         ret = char_scan(i);
